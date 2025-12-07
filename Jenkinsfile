@@ -3,86 +3,75 @@ pipeline {
   agent any
 
   parameters {
-    string(name: 'AWS_REGION',        defaultValue: 'ap-south-1', description: 'AWS region')
-    string(name: 'TF_WORKSPACE',      defaultValue: 'default',    description: 'Terraform workspace')
-    string(name: 'EC2_INSTANCE_TYPE', defaultValue: 't3.micro',   description: 'EC2 instance type')
-    string(name: 'EC2_KEY_NAME',      defaultValue: '',           description: 'Existing EC2 Key Pair name (optional)')
-    booleanParam(name: 'AUTO_APPLY',  defaultValue: false,        description: 'Skip approval and auto-apply')
+    string(name: 'AWS_REGION', defaultValue: 'us-east-1', description: 'AWS region')
+    string(name: 'TF_WORKSPACE', defaultValue: 'default', description: 'Terraform workspace')
+    booleanParam(name: 'AUTO_APPLY', defaultValue: false, description: 'Auto-apply without manual approval')
   }
 
   environment {
-    AWS_ACCESS_KEY_ID     = credentials('aws_access_key_id')
-    AWS_SECRET_ACCESS_KEY = credentials('aws_secret_access_key')
-  }
-
-  options {
-    timestamps()
-    ansiColor('xterm')
-    buildDiscarder(logRotator(numToKeepStr: '30'))
+    // If you set TF_WORKSPACE here, use Approach A above (no CLI select)
+    TF_WORKSPACE = "${params.TF_WORKSPACE}"
   }
 
   stages {
     stage('Checkout') {
-      steps {
-        // If job is Pipeline from SCM, Jenkins auto injects SCM; 'checkout scm' works.
-        checkout scm
-      }
+      steps { checkout scm }
     }
 
     stage('Terraform Init') {
       steps {
         dir('terraform') {
-          sh 'terraform init -input=false'
+          sh '''
+            set -euo pipefail
+            terraform -version
+            terraform init -input=false
+          '''
         }
       }
     }
 
+    stage('Select/Create Workspace') {
+      steps {
+        dir('terraform') {
+          // Use ONE of the approaches:
+          // --- Approach A (preferred if TF_WORKSPACE is set) ---
+          sh '''
+            set -euo pipefail
+            echo "TF_WORKSPACE param value: '${TF_WORKSPACE}'"
 
-stage('Select/Create Workspace') {
-  steps {
-    dir('terraform') {
-      echo "TF_WORKSPACE param value: '${params.TF_WORKSPACE}'"
-      sh 'terraform workspace list || true'
-      // Create if it does not exist (grep -w for exact match)
-      sh 'terraform workspace list | grep -w "${TF_WORKSPACE}" >/dev/null || terraform workspace new "${TF_WORKSPACE}"'
-      // Select
-      sh 'terraform workspace select "${TF_WORKSPACE}"'
-      // Show current workspace
-      sh 'terraform workspace show'
+            if ! terraform workspace list | sed 's/*//g' | awk '{$1=$1};1' | grep -qx "${TF_WORKSPACE}"; then
+              terraform workspace new "${TF_WORKSPACE}"
+            fi
+            echo "Workspace pinned via TF_WORKSPACE. Proceeding..."
+          '''
+          // --- Approach B (requires unset TF_WORKSPACE) ---
+          // sh '''
+          //   set -euo pipefail
+          //   unset TF_WORKSPACE
+          //   terraform workspace list | sed 's/*//g' | awk '{$1=$1};1' | grep -qx "${params.TF_WORKSPACE}" || terraform workspace new "${params.TF_WORKSPACE}"
+          //   terraform workspace select "${params.TF_WORKSPACE}"
+          // '''
+        }
+      }
     }
-  }
-}
-
-
-
-
-
-
-
-
-
-
 
     stage('Terraform Plan') {
       steps {
         dir('terraform') {
-          sh """
+          sh '''
+            set -euo pipefail
             terraform plan \
               -var aws_region="${AWS_REGION}" \
-              -var vpc_cidr="10.0.0.0/16" \
-              -var public_subnet_cidr="10.0.1.0/24" \
-              -var instance_type="${EC2_INSTANCE_TYPE}" \
-              -var key_name="${EC2_KEY_NAME}" \
               -input=false -out=tfplan
-          """
+
+            echo "Plan generated: tfplan"
+          '''
         }
       }
     }
 
     stage('Approval') {
-      when {
-        expression { return !params.AUTO_APPLY }
-      }
+      when { expression { return !params.AUTO_APPLY } }
       steps {
         timeout(time: 10, unit: 'MINUTES') {
           input message: 'Apply Terraform plan?'
@@ -93,7 +82,10 @@ stage('Select/Create Workspace') {
     stage('Terraform Apply') {
       steps {
         dir('terraform') {
-          sh 'terraform apply -input=false -auto-approve tfplan'
+          sh '''
+            set -euo pipefail
+            terraform apply -input=false -auto-approve tfplan
+          '''
         }
       }
     }
@@ -101,7 +93,10 @@ stage('Select/Create Workspace') {
     stage('Outputs') {
       steps {
         dir('terraform') {
-          sh 'terraform output -json > tf-outputs.json || true'
+          sh '''
+            set -euo pipefail
+            terraform output -json > tf-outputs.json || true
+          '''
           archiveArtifacts artifacts: 'tf-outputs.json', fingerprint: true
         }
       }
