@@ -37,17 +37,31 @@ pipeline {
       }
     }
 
-    stage('Select/Create Workspace') {
-      steps {
-        dir('terraform') {
-          sh """
-            set -e
-            terraform workspace list | grep -q "${TF_WORKSPACE}" || terraform workspace new "${TF_WORKSPACE}"
-            terraform workspace select "${TF_WORKSPACE}"
-          """
-        }
-      }
+
+stage('Select/Create Workspace') {
+  steps {
+    dir('terraform') {
+      echo "TF_WORKSPACE param value: '${params.TF_WORKSPACE}'"
+      sh 'terraform workspace list || true'
+      // Create if it does not exist (grep -w for exact match)
+      sh 'terraform workspace list | grep -w "${TF_WORKSPACE}" >/dev/null || terraform workspace new "${TF_WORKSPACE}"'
+      // Select
+      sh 'terraform workspace select "${TF_WORKSPACE}"'
+      // Show current workspace
+      sh 'terraform workspace show'
     }
+  }
+}
+
+
+
+
+
+
+
+
+
+
 
     stage('Terraform Plan') {
       steps {
